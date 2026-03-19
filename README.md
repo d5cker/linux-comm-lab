@@ -31,30 +31,6 @@
  
 ---
  
-### Q1. 권한 777인 모든 파일 찾기
- 
-```bash
-find /home/ubuntu/cicd_logs/ -type f -perm 777
-```
- 
-### Q2. 파일명에 `failure` 포함된 파일만 필터링 (`grep` 없이)
- 
-```bash
-find /home/ubuntu/cicd_logs/ -type f -perm 777 -name "*failure*"
-```
- 
-### Q3. 권한 777 → 644 일괄 변경
- 
-```bash
-find /home/ubuntu/cicd_logs/ -type f -perm 777 -exec chmod 644 {} \;
-```
- 
-- `{}` : find가 찾은 파일 경로로 치환되는 플레이스홀더
-- `\;` : `-exec` 블록 종료 (셸이 `;`를 해석하지 않도록 이스케이프)
-- 💡 `{} +` 로 바꾸면 파일을 묶어 한 번에 실행하여 더 빠름
- 
----
- 
 ## 2. CSV 로그 분석 — `awk`
  
 ### 개념
@@ -84,36 +60,7 @@ awk -F'구분자' 'condition { action }' 파일
 | `$19` | severity |
 | `$23` | is_flaky_test |
 | `$24` | rollback_triggered |
- 
----
- 
-### Q1. CRITICAL 장애 로그 추출
- 
-```bash
-awk -F',' 'NR>1 && $19=="CRITICAL" {print $1, $14, $15}' /home/ubuntu/cicd_logs/cicd_logs.csv
-```
- 
-### Q2. CRITICAL + rollback=TRUE, 중복 제거 후 failure_stage별 집계
- 
-```bash
-awk -F',' 'NR>1 && $19=="CRITICAL" && $24=="TRUE" && !seen[$0]++ {stage[$14]++} END {for (s in stage) print s, stage[s]}' /home/ubuntu/cicd_logs/cicd_logs.csv
-```
- 
-**`!seen[$0]++` 동작 원리**
- 
-```
-처음 등장 → seen["행"] = 0 → !0 = true  → 처리 ✅
-두 번째~  → seen["행"] = 1 → !1 = false → 건너뜀 (중복 제거) ❌
-```
- 
-### Q3. flaky 테스트의 평균 수행 시간 계산
- 
-> `is_flaky_test`($23)가 `True`인 로그의 `test_duration_sec`($13) 평균
- 
-```bash
-awk -F',' 'NR>1 && $23=="True" {sum+=$13; cnt++} END {if(cnt>0) print "평균:", sum/cnt, "sec"}' /home/ubuntu/cicd_logs/cicd_logs.csv
-```
- 
+
 ---
  
 ## 3. JSON 로그 분석 — `jq`
@@ -134,36 +81,6 @@ jq '필터' 파일.json
 | `contains("str")` | 문자열 포함 여부 |
 | `-r` | 따옴표 없이 순수 텍스트 출력 |
 | `[ ... ]` | 결과를 배열로 감싸기 |
- 
----
- 
-### Q1. severity = CRITICAL 로그 필터링
- 
-```bash
-cat pipeline_logs.json | jq '.[] | select(.severity == "CRITICAL")'
-```
- 
-### Q2. CRITICAL 로그에서 특정 필드만 추출
- 
-```bash
-cat pipeline_logs.json | jq '.[] | select(.severity == "CRITICAL") | {pipeline_id: .pipeline_id, error_code: .error_code}'
-```
- 
-### Q3. 언어별 장애 횟수 집계
- 
-```bash
-cat pipeline_logs.json | jq -r '.[].language' | sort | uniq -c
-```
- 
-- `jq -r` : 따옴표 없이 텍스트 추출
-- `sort` : 같은 언어끼리 인접 정렬
-- `uniq -c` : 중복 합치고 앞에 횟수 표시
- 
-### Q4. incident_created=true 로그를 새 JSON 배열로 변환
- 
-```bash
-jq '[.[] | select(.incident_created == true) | {run_id: .run_id, os: .os, cloud_provider: .cloud_provider}]' pipeline_logs.json
-```
  
 ### 기타 유용한 `jq` 명령어
  
@@ -187,24 +104,7 @@ cat pipeline_logs.json | jq '.[] | select(.error_message | contains("Security"))
  
 > `grep`으로 행을 먼저 줄이면 `awk` 처리 속도가 향상됨
  
----
- 
-### Q1. 야간 배포 비용 감사 (2026-01-12 새벽 01~03시, Python)
- 
-출력 형식: `[실행시간] 사용자ID - $비용` + 마지막 줄에 총합
- 
-```bash
-grep -E "2026-01-12T0[1-3]:" deploy.csv | awk -F',' '$9=="Python" {print "["$3"] "$8" - $"$20; s+=$20} END{printf "Total Cost: $%.2f\n", s}'
-```
- 
-### Q2. AWS 환경에서 CI/CD 툴별 평균 빌드 시간 (빠른 순)
- 
-```bash
-grep ',AWS,' emp.csv | awk -F',' '{sum[$4]+=$12; cnt[$4]++} END{for(i in sum) print i, sum[i]/cnt[i]}' | sort -k2,2n
-```
- 
-- `sort -k2,2n` : 2번째 필드(평균 빌드 시간) 기준 숫자 오름차순 → 첫 줄 = 가장 빠른 툴
- 
+
 ---
  
 ## 5. YAML 설정 분석 — `yq`
@@ -215,6 +115,76 @@ grep ',AWS,' emp.csv | awk -F',' '{sum[$4]+=$12; cnt[$4]++} END{for(i in sum) pr
 yq '.path.to.field' file.yaml           # 값 읽기
 yq -i '.path.to.field = 값' file.yaml   # 파일 직접 수정 (in-place)
 ```
+ 
+---
+
+## 6. 명령어 예제
+
+### Q1. 권한 필터링
+
+> 권한이 777인 파일들 중 파일명에 `failure` 포함된 파일만 필터링 (`grep` 없이)
+ 
+```bash
+find /home/ubuntu/cicd_logs/ -type f -perm 777 -name "*failure*"
+```
+---
+
+ 
+### Q2. 명령어 동시 사용
+
+> `find` 사용하여 권한 777 → 644 일괄 변경
+ 
+```bash
+find /home/ubuntu/cicd_logs/ -type f -perm 777 -exec chmod 644 {} \;
+```
+ 
+- `{}` : find가 찾은 파일 경로로 치환되는 플레이스홀더
+- `\;` : `-exec` 블록 종료 (셸이 `;`를 해석하지 않도록 이스케이프)
+- 💡 `{} +` 로 바꾸면 파일을 묶어 한 번에 실행하여 더 빠름
+  
+---
+ 
+### Q3. `awk` 조건부 검색, 중복 제거
+> severity == `CRITICAL` + rollback == `TRUE` 검색 후, 중복 제거 후 failure_stage별 집계
+ 
+```bash
+awk -F',' 'NR>1 && $19=="CRITICAL" && $24=="TRUE" && !seen[$0]++ {stage[$14]++} END {for (s in stage) print s, stage[s]}' /home/ubuntu/cicd_logs/cicd_logs.csv
+```
+ 
+`!seen[$0]++` **동작 원리**
+ 
+```
+처음 등장 → seen["행"] = 0 → !0 = true  → 처리 ✅
+두 번째~  → seen["행"] = 1 → !1 = false → 건너뜀 (중복 제거) ❌
+```
+
+---
+
+### Q4. `awk` 조건부 검색, 산술 연산
+ 
+> `is_flaky_test`($23)가 `True`인 로그의 `test_duration_sec`($13) 평균 출력
+ 
+```bash
+awk -F',' 'NR>1 && $23=="True" {sum+=$13; cnt++} END {if(cnt>0) print "평균:", sum/cnt, "sec"}' /home/ubuntu/cicd_logs/cicd_logs.csv
+```
+ ---
+ 
+ 
+### Q8. 야간 배포 비용 감사 (2026-01-12 새벽 01~03시, Python)
+ 
+출력 형식: `[실행시간] 사용자ID - $비용` + 마지막 줄에 총합
+ 
+```bash
+grep -E "2026-01-12T0[1-3]:" deploy.csv | awk -F',' '$9=="Python" {print "["$3"] "$8" - $"$20; s+=$20} END{printf "Total Cost: $%.2f\n", s}'
+```
+ 
+### Q10. AWS 환경에서 CI/CD 툴별 평균 빌드 시간 (빠른 순)
+ 
+```bash
+grep ',AWS,' emp.csv | awk -F',' '{sum[$4]+=$12; cnt[$4]++} END{for(i in sum) print i, sum[i]/cnt[i]}' | sort -k2,2n
+```
+ 
+- `sort -k2,2n` : 2번째 필드(평균 빌드 시간) 기준 숫자 오름차순 → 첫 줄 = 가장 빠른 툴
  
 ---
  
@@ -256,7 +226,6 @@ find . -name "*hpa*.yaml" -exec yq -i '(.spec.metrics[] | select(.resource.name 
 - `select(.resource.name == "cpu")` : metrics 배열 중 cpu 항목만 선택
 - `= 50` : averageUtilization 값을 50으로 덮어씀
  
----
  
 ## 6. 핵심 개념 & 치트시트
  
