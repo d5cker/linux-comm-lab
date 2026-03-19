@@ -1,0 +1,13 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: app
+          image: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/web:1.0
+          ports:
+            - containerPort: 8080
