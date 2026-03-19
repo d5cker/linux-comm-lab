@@ -1,0 +1,17 @@
+servers:
+  - id: "srv-01"
+    hostname: "web-runner"
+    ram_gb: 8
+    status: "running"
+  - id: "srv-02"
+    hostname: "db-master"
+    ram_gb: 16
+    status: "running"
+  - id: "srv-03"
+    hostname: "test-node"
+    ram_gb: 4
+    status: "stopped"
+  - id: "srv-04"
+    hostname: "backup-nas"
+    ram_gb: 32
+    status: "running"
