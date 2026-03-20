@@ -1,13 +1,13 @@
-# 🔍 DevOps 상황에서 Linux 명령어 실전 가이드
+# 🔍 DevOps 상황에서 Linux 명령어 문제 가이드
 
 ## 📌 개요
 ### Linux 기반 로그 분석 실전 가이드
 
 Linux 명령어를 활용해 로그파일과 설정파일을 분석하는 데이터 처리 및 검증 실습 프로젝트입니다.
 
-- 1 `find`, `grep`, `awk`, 정규표현식을 활용해 파일 탐색과 로그 필터링을 수행
+ -  `find`, `grep`, `awk`, 정규표현식을 활용해 파일 탐색과 로그 필터링을 수행
 
-- 2 JSON·YAML에서 `jq`와 `yq`를 이용해 형태의 데이터를 가공하고 검증하는 흐름으로 구성
+ -  JSON·YAML에서 `jq`와 `yq`를 이용해 형태의 데이터를 가공 및 검증 구성
 
 ---
  
@@ -91,7 +91,7 @@ awk -F',' '{print $1, $3}' file.csv
 
 ---
 
-## 📊 데이터 구조 (컬럼 설명)
+## 📊 데이터 구조
 
 | 순서 | 필드명 | 설명 |
 |------|--------|------|
@@ -116,13 +116,39 @@ awk -F',' '{print $1, $3}' file.csv
 
 # 3. 로그 데이터 기반 문제 구성
 
-로그 분석에서 다루는 문제는 다음과 같이 나뉩니다.
+상단에서 학습한 Linux 명령어(grep, awk, find)와 로그를 기반으로,<br>
+실제 CI/CD 운영 환경에서 발생할 수 있는 상황을 가정한 분석 문제 5개를 구성하였습니다.
+
+지금 구조는 **문제 / 답이 섞여 있고, 읽는 사람이 “무엇을 요구하는지” 한눈에 안 들어오는 상태**입니다.
+DevOps 실습 문서는 아래처럼 **Mission → Context → Requirements → Answer** 구조로 통일하는 게 가장 명확합니다.
+
+요청하신 스타일로 전체를 **가독성 + 실무형**으로 재정리해 드립니다.
 
 ---
 
-## 🔴 장애 분석
+# 🔴 장애 분석
 
-### Q1. CRITICAL 장애 로그 추출
+## 🛑 [Mission] CRITICAL 장애 로그 식별
+
+### 1. 상황
+
+CI/CD 파이프라인 실행 중 발생한 장애 로그가 `/home/ubuntu/cicd_logs/cicd_logs.csv`에 저장되어 있다.
+운영팀은 서비스 영향도가 높은 **CRITICAL 장애**를 우선적으로 분석하려고 한다.
+
+---
+
+### 2. 요구 사항 
+
+1. severity가 `CRITICAL`인 로그만 추출
+2. 다음 필드를 출력
+
+* pipeline_id
+* failure_stage
+* failure_type
+
+---
+
+### 💻 모범 답안
 
 ```bash
 awk -F',' 'NR>1 && $14=="CRITICAL" {print $1, $12, $13}' cicd_logs.csv
@@ -130,17 +156,48 @@ awk -F',' 'NR>1 && $14=="CRITICAL" {print $1, $12, $13}' cicd_logs.csv
 
 ---
 
-### Q2. 장애 발생 단계별 집계
+## 🛑 [Mission] CRITICAL 장애 단계별 집계
+
+### 1. 상황
+
+CRITICAL 장애 중 일부는 롤백이 발생한 경우이며, 중복 로그도 포함되어 있다.
+운영팀은 **실제 장애 발생 건수**를 기준으로 단계별 통계를 보고자 한다.
+
+---
+
+### 2. 요구 사항 
+
+1. severity가 `CRITICAL`이고 rollback_triggered가 `TRUE`인 로그만 대상
+2. 중복된 전체 행은 제거
+3. failure_stage 기준으로 발생 건수 집계
+
+---
+
+### 💻 모범 답안
 
 ```bash
-awk -F',' 'NR>1 && $14=="CRITICAL" {stage[$12]++} END {for (s in stage) print s, stage[s]}' cicd_logs.csv
+awk -F',' 'NR>1 && $14=="CRITICAL" && $16=="TRUE" && !seen[$0]++ {stage[$12]++} END {for (s in stage) print s, stage[s]}' cicd_logs.csv
 ```
 
 ---
 
-## 🟡 성능 분석
+# 🟡 성능 분석
 
-### Q3. 평균 테스트 시간 계산
+## ⚡ [Mission] 평균 테스트 시간 분석
+
+### 1. 상황 
+
+전체 파이프라인의 테스트 성능을 파악하기 위해 평균 테스트 시간을 계산한다.
+
+---
+
+### 2. 요구 사항 
+
+* test_duration_sec(10번째 필드)의 평균값 계산
+
+---
+
+### 💻 모범 답안
 
 ```bash
 awk -F',' 'NR>1 {sum+=$10; cnt++} END {print sum/cnt}' cicd_logs.csv
@@ -148,9 +205,25 @@ awk -F',' 'NR>1 {sum+=$10; cnt++} END {print sum/cnt}' cicd_logs.csv
 
 ---
 
-## 🟢 품질 분석
+# 🟢 품질 분석
 
-### Q4. flaky 테스트 평균 시간
+## 🧪 [Mission] flaky 테스트 성능 분석
+
+### 1. 상황 
+
+불안정한 테스트(flaky test)는 품질 저하의 주요 원인이다.
+flaky 테스트만 따로 분석하여 평균 실행 시간을 확인한다.
+
+---
+
+### 2. 요구 사항 
+
+* is_flaky_test가 `True`인 경우만 필터링
+* 해당 테스트들의 평균 실행 시간 계산
+
+---
+
+### 💻 모범 답안
 
 ```bash
 awk -F',' 'NR>1 && $15=="True" {sum+=$10; cnt++} END {print sum/cnt}' cicd_logs.csv
@@ -158,9 +231,25 @@ awk -F',' 'NR>1 && $15=="True" {sum+=$10; cnt++} END {print sum/cnt}' cicd_logs.
 
 ---
 
-## 🔵 특정 조건 필터링
+# 🔵 특정 조건 필터링
 
-### Q5. 특정 시간대 로그 분석
+## 🕒 [Mission] 특정 시간대 로그 분석
+
+### 1. 상황 
+
+2026-01-12 새벽 01시대에 장애가 집중적으로 발생했다는 보고가 있다.
+해당 시간대 로그를 확인한다.
+
+---
+
+### 2. 요구 사항 
+
+* timestamp가 `2026-01-12T01`인 로그 필터링
+* 사용자(author)와 빌드 시간 출력
+
+---
+
+### 💻 모범 답안
 
 ```bash
 grep "2026-01-12T01" cicd_logs.csv | awk -F',' '{print $6, $9}'
@@ -168,15 +257,66 @@ grep "2026-01-12T01" cicd_logs.csv | awk -F',' '{print $6, $9}'
 
 ---
 
-## ⚫ 파일 보안 점검
+# ⚫ 파일 보안 점검
 
-### Q6. 권한이 777인 로그 파일 찾기
+## 🔐 [Mission] 위험 권한 파일 탐지
+
+### 1. 상황 
+
+서버 내 일부 로그 파일이 잘못된 권한(777)으로 설정되어 보안 위험이 발생하고 있다.
+
+---
+
+### 2. 요구 사항 
+
+1. `/home/ubuntu/cicd_logs/` 이하에서 권한이 777인 파일 탐색
+2. 파일 이름에 `failure` 포함된 파일만 필터링 (find만 사용)
+3. 해당 파일들의 권한을 644로 변경
+
+---
+
+### 💻 모범 답안
 
 ```bash
-find /logs -type f -perm 777
+find /home/ubuntu/cicd_logs/ -type f -perm 777
+```
+
+```bash
+find /home/ubuntu/cicd_logs/ -type f -perm 777 -name "*failure*"
+```
+
+```bash
+find /home/ubuntu/cicd_logs/ -type f -perm 777 -exec chmod 644 {} \;
 ```
 
 ---
+
+# 🔵 추가 심화 문제 
+
+## ☁️ [Mission] AWS 환경 성능 비교
+
+### 1. 상황 
+
+AWS 환경에서 CI/CD 툴별 성능 차이를 분석하려고 한다.
+
+---
+
+### 2. 요구 사항 
+
+* cloud_provider가 AWS인 로그만 필터링
+* ci_tool별 평균 build_duration_sec 계산
+* 가장 빠른 순으로 정렬
+
+---
+
+### 💻 모범 답안
+
+```bash
+grep ',AWS,' cicd_logs.csv | awk -F',' '{sum[$4]+=$9; cnt[$4]++} END{for(i in sum) print i, sum[i]/cnt[i]}' | sort -k2,2n
+```
+
+
+
 
 # 4. JSON · YAML 설정 검증 및 문제 구성
 
