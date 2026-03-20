@@ -15,8 +15,8 @@ Linux 명령어를 활용해 로그파일과 설정파일을 분석하는 데이
 1. [linux 명령어 개념 설명](#-개요)
 2. [CSV 로그 데이터 이해](#2-csv-로그-분석--awk)
 3. [로그 데이터 기반 문제 구성](#3-json-로그-분석--jq)
-4. [JSON, YAML 설정 분석 및 문제 구성](#5-yaml-설정-분석--yq)
-5. [핵심 개념](#6-핵심-개념--치트시트)
+4. [JSON, YAML 설정 분석 및 문제 구성](#4-yaml-설정-분석--yq)
+5. [핵심 개념](#5-핵심-개념--치트시트)
  
 ---
 
@@ -118,11 +118,6 @@ awk -F',' '{print $1, $3}' file.csv
 
 상단에서 학습한 Linux 명령어(grep, awk, find)와 로그를 기반으로,<br>
 실제 CI/CD 운영 환경에서 발생할 수 있는 상황을 가정한 분석 문제 5개를 구성하였습니다.
-
-지금 구조는 **문제 / 답이 섞여 있고, 읽는 사람이 “무엇을 요구하는지” 한눈에 안 들어오는 상태**입니다.
-DevOps 실습 문서는 아래처럼 **Mission → Context → Requirements → Answer** 구조로 통일하는 게 가장 명확합니다.
-
-요청하신 스타일로 전체를 **가독성 + 실무형**으로 재정리해 드립니다.
 
 ---
 
@@ -320,360 +315,273 @@ grep ',AWS,' cicd_logs.csv | awk -F',' '{sum[$4]+=$9; cnt[$4]++} END{for(i in su
 
 # 4. JSON · YAML 설정 검증 및 문제 구성
 
-로그 분석 이후, 설정 파일을 통해 문제를 확인하고 수정하는 단계입니다.
+이 실습은 DevOps 환경에서 실제로 발생할 수 있는 로그 데이터를 기반으로,
+Linux 명령어와 `jq`, `yq`를 활용해 데이터를 필터링하고 가공하는 과정을 다룹니다.
+
 
 ---
 
-## 📦 JSON (jq)
+# 1. 🔴 CSV 로그 분석 (awk, grep, find)
 
----
+## 🛑 [Mission] CRITICAL 장애 로그 식별
 
-### Q1. CRITICAL 로그 필터링
+### 상황 
+
+CI/CD 파이프라인 실행 로그가 `cicd_logs.csv` 파일에 저장되어 있다.
+운영팀은 서비스 영향도가 높은 CRITICAL 장애만 우선적으로 확인하려고 한다.
+
+### 요구 사항 
+
+* severity가 `CRITICAL`인 로그만 추출
+* 다음 필드를 출력
+
+  * pipeline_id
+  * failure_stage
+  * failure_type
+
+### 💻 모범 답안
 
 ```bash
-jq '.[] | select(.severity=="CRITICAL")' logs.json
+awk -F',' 'NR>1 && $14=="CRITICAL" {print $1, $12, $13}' cicd_logs.csv
 ```
 
 ---
 
-### Q2. 특정 필드만 추출
+## 🛑 [Mission] 장애 단계별 집계
+
+### 상황 
+
+CRITICAL 장애 중 일부는 롤백이 발생했으며, 동일한 로그가 중복으로 기록되어 있다.
+실제 장애 발생 건수를 기준으로 단계별 통계를 확인하려고 한다.
+
+### 요구 사항 
+
+* severity가 `CRITICAL`이고 rollback_triggered가 `TRUE`인 로그만 대상
+* 중복된 전체 행은 제거
+* failure_stage 기준으로 발생 건수 집계
+
+### 💻 모범 답안
 
 ```bash
-jq '.[] | {pipeline_id, error_code}' logs.json
+awk -F',' 'NR>1 && $14=="CRITICAL" && $16=="TRUE" && !seen[$0]++ {stage[$12]++} END {for (s in stage) print s, stage[s]}' cicd_logs.csv
 ```
 
 ---
 
-### Q3. 롤백 발생 로그 필터링
+## ⚡ [Mission] 평균 테스트 시간 계산
+
+### 상황 
+
+전체 파이프라인의 테스트 성능을 파악하기 위해 평균 테스트 시간을 계산한다.
+
+### 요구 사항 
+
+* test_duration_sec 필드의 평균값 계산
+
+### 💻 모범 답안
 
 ```bash
-jq '.[] | select(.rollback_triggered==true)' logs.json
+awk -F',' 'NR>1 {sum+=$10; cnt++} END {print sum/cnt}' cicd_logs.csv
 ```
 
 ---
 
-### Q4. 특정 문자열 포함 여부 확인
+## 🧪 [Mission] flaky 테스트 성능 분석
+
+### 상황 
+
+불안정한 테스트(flaky test)는 품질 저하의 주요 원인이다.
+flaky 테스트만 따로 분석하여 실행 시간을 확인한다.
+
+### 요구 사항 
+* is_flaky_test가 `True`인 로그만 필터링
+* 해당 로그들의 평균 테스트 시간 계산
+
+### 💻 모범 답안
 
 ```bash
-jq '.[] | select(.error_message | contains("Security"))' logs.json
+awk -F',' 'NR>1 && $15=="True" {sum+=$10; cnt++} END {print sum/cnt}' cicd_logs.csv
 ```
 
 ---
 
-### Q5. 언어별 장애 횟수 집계
+## 🕒 [Mission] 특정 시간대 로그 분석
+
+### 상황 
+
+특정 시간대에 장애가 집중 발생했다는 보고가 있다.
+
+### 요구 사항 
+
+* timestamp가 `2026-01-12T01`인 로그만 필터링
+* 사용자(author)와 빌드 시간 출력
+
+### 💻 모범 답안
 
 ```bash
-jq -r '.[].language' logs.json | sort | uniq -c
+grep "2026-01-12T01" cicd_logs.csv | awk -F',' '{print $6, $9}'
 ```
 
 ---
 
-## 📦 YAML (yq)
+## 🔐 [Mission] 로그 파일 권한 점검
 
----
+### 상황 
 
-### Q1. Deployment 이미지 조회
+로그 디렉터리 내 일부 파일이 777 권한으로 설정되어 보안 문제가 발생하고 있다.
 
-```bash
-yq '.spec.template.spec.containers[0].image' deploy.yaml
-```
+### 요구 사항 
 
----
+1. `/home/ubuntu/cicd_logs/` 이하에서 권한이 777인 파일 찾기
+2. 파일 이름에 `failure`가 포함된 파일만 추가 필터링 (find만 사용)
+3. 해당 파일들의 권한을 644로 변경
 
-### Q2. replicas 값 확인
+### 💻 모범 답안
 
-```bash
-yq '.spec.replicas' deploy.yaml
-```
-
----
-
-### Q3. HPA CPU 기준 변경 (30 → 50)
-
-```bash
-yq -i '(.spec.metrics[] | select(.resource.name=="cpu") | .resource.target.averageUtilization)=50' hpa.yaml
-```
-
----
-
-### Q4. env 값 수정
-
-```bash
-yq -i '(.spec.template.spec.containers[0].env[] | select(.name=="SPRING_PROFILES_ACTIVE") | .value)="prod"' deploy.yaml
-```
-
----
-
-### Q5. namespace 변경
-
-```bash
-yq -i '.metadata.namespace="prod"' deploy.yaml
-```
-
----
-
-### Q6. YAML 파일 일괄 수정
-
-```bash
-find . -name "*.yaml" -exec yq -i '.metadata.namespace="prod"' {} \;
-```
-
----
-
-# ✅ 한줄 정리
-
-👉
-**로그(CSV)는 grep/awk로 분석하고, 설정(JSON/YAML)은 jq/yq로 검증하고 수정한다**
-
-
-
-ㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡ
-
-
-## 1. 파일 시스템 보안 — `find` + `chmod`
- 
-### 개념
- 
-| 옵션 | 설명 |
-|------|------|
-| `-type f` | 일반 파일만 탐색 (디렉터리 제외) |
-| `-perm 777` | 권한이 정확히 `777`인 파일 |
-| `-name "패턴"` | 파일 이름 패턴 매칭 (`*` 와일드카드) |
-| `-exec cmd {} \;` | 검색된 파일마다 명령 실행 |
- 
-> ⚠️ **보안 원칙**: 권한 `777`(rwxrwxrwx)은 운영 환경에서 **사용 금지**.  
-> 로그 파일 권장 권한: `644` (소유자 읽기·쓰기 / 그룹·기타 읽기 전용)
- 
----
- 
-### Q1. 권한 777인 모든 파일 찾기
- 
 ```bash
 find /home/ubuntu/cicd_logs/ -type f -perm 777
 ```
- 
-### Q2. 파일명에 `failure` 포함된 파일만 필터링 (`grep` 없이)
- 
+
 ```bash
 find /home/ubuntu/cicd_logs/ -type f -perm 777 -name "*failure*"
 ```
- 
-### Q3. 권한 777 → 644 일괄 변경
- 
+
 ```bash
 find /home/ubuntu/cicd_logs/ -type f -perm 777 -exec chmod 644 {} \;
 ```
- 
-- `{}` : find가 찾은 파일 경로로 치환되는 플레이스홀더
-- `\;` : `-exec` 블록 종료 (셸이 `;`를 해석하지 않도록 이스케이프)
-- 💡 `{} +` 로 바꾸면 파일을 묶어 한 번에 실행하여 더 빠름
- 
+
 ---
- 
-## 2. CSV 로그 분석 — `awk`
- 
-### 개념
- 
-```
-awk -F'구분자' 'condition { action }' 파일
-```
- 
-| 변수/패턴 | 설명 |
-|-----------|------|
-| `-F','` | 필드 구분자를 쉼표로 지정 (CSV) |
-| `NR` | 현재 행 번호 |
-| `NR>1` | 헤더(1번째 줄) 건너뜀 |
-| `$N` | N번째 필드 |
-| `$0` | 전체 행 |
-| `!seen[$0]++` | 중복 행 제거 |
-| `END { }` | 전체 처리 후 실행 (집계 출력) |
- 
-### 주요 필드 구조 (cicd_logs.csv)
- 
-| 필드 | 이름 |
-|------|------|
-| `$1` | pipeline_id |
-| `$13` | test_duration_sec |
-| `$14` | failure_stage |
-| `$15` | failure_type |
-| `$19` | severity |
-| `$23` | is_flaky_test |
-| `$24` | rollback_triggered |
- 
----
- 
-### Q1. CRITICAL 장애 로그 추출
- 
-```bash
-awk -F',' 'NR>1 && $19=="CRITICAL" {print $1, $14, $15}' /home/ubuntu/cicd_logs/cicd_logs.csv
-```
- 
-### Q2. CRITICAL + rollback=TRUE, 중복 제거 후 failure_stage별 집계
- 
-```bash
-awk -F',' 'NR>1 && $19=="CRITICAL" && $24=="TRUE" && !seen[$0]++ {stage[$14]++} END {for (s in stage) print s, stage[s]}' /home/ubuntu/cicd_logs/cicd_logs.csv
-```
- 
-**`!seen[$0]++` 동작 원리**
- 
-```
-처음 등장 → seen["행"] = 0 → !0 = true  → 처리 ✅
-두 번째~  → seen["행"] = 1 → !1 = false → 건너뜀 (중복 제거) ❌
-```
- 
-### Q3. flaky 테스트의 평균 수행 시간 계산
- 
-> `is_flaky_test`($23)가 `True`인 로그의 `test_duration_sec`($13) 평균
- 
-```bash
-awk -F',' 'NR>1 && $23=="True" {sum+=$13; cnt++} END {if(cnt>0) print "평균:", sum/cnt, "sec"}' /home/ubuntu/cicd_logs/cicd_logs.csv
-```
- 
----
- 
-## 3. JSON 로그 분석 — `jq`
- 
-### 개념
- 
-```
-jq '필터' 파일.json
-```
- 
-| 표현식 | 설명 |
-|--------|------|
-| `.[]` | 배열의 모든 요소를 펼침 |
-| `.field` | 특정 필드 접근 |
-| `select(조건)` | 조건에 맞는 요소만 통과 |
-| `{key: .field}` | 새로운 객체 생성 |
-| `\| length` | 배열 길이 |
-| `contains("str")` | 문자열 포함 여부 |
-| `-r` | 따옴표 없이 순수 텍스트 출력 |
-| `[ ... ]` | 결과를 배열로 감싸기 |
- 
----
- 
-### Q1. severity = CRITICAL 로그 필터링
- 
-```bash
-cat pipeline_logs.json | jq '.[] | select(.severity == "CRITICAL")'
-```
- 
-### Q2. CRITICAL 로그에서 특정 필드만 추출
- 
-```bash
-cat pipeline_logs.json | jq '.[] | select(.severity == "CRITICAL") | {pipeline_id: .pipeline_id, error_code: .error_code}'
-```
- 
-### Q3. 언어별 장애 횟수 집계
- 
-```bash
-cat pipeline_logs.json | jq -r '.[].language' | sort | uniq -c
-```
- 
-- `jq -r` : 따옴표 없이 텍스트 추출
-- `sort` : 같은 언어끼리 인접 정렬
-- `uniq -c` : 중복 합치고 앞에 횟수 표시
- 
-### Q4. incident_created=true 로그를 새 JSON 배열로 변환
- 
+
+# 2. 🟠 JSON 로그 분석 (jq)
+
+## 📌 [Mission] 인시던트 로그 리포트 생성
+
+### 상황 
+
+파이프라인 로그가 `pipeline_logs.json` 파일에 저장되어 있으며,
+인시던트가 생성된 로그만 별도로 정리하려고 한다.
+
+### 요구 사항 
+
+* incident_created가 true인 로그만 추출
+* 다음 필드만 포함한 JSON 배열로 변환
+
+  * run_id
+  * os
+  * cloud_provider
+
+### 💻 모범 답안
+
 ```bash
 jq '[.[] | select(.incident_created == true) | {run_id: .run_id, os: .os, cloud_provider: .cloud_provider}]' pipeline_logs.json
 ```
- 
-### 기타 유용한 `jq` 명령어
- 
-```bash
-# 배열 전체 크기 확인
-cat pipeline_logs.json | jq '. | length'
- 
-# 에러 메시지에 특정 단어 포함 여부
-cat pipeline_logs.json | jq '.[] | select(.error_message | contains("Security"))'
-```
- 
+
 ---
- 
-## 4. 복합 파이프라인 — `grep` + `awk`
- 
-### 파이프라인 설계 원칙
- 
-```
-[1차 필터: grep] → [2차 처리: awk] → [3차 정렬: sort]
-```
- 
-> `grep`으로 행을 먼저 줄이면 `awk` 처리 속도가 향상됨
- 
----
- 
-### Q1. 야간 배포 비용 감사 (2026-01-12 새벽 01~03시, Python)
- 
-출력 형식: `[실행시간] 사용자ID - $비용` + 마지막 줄에 총합
- 
+
+## 📌 [Mission] CRITICAL 로그 필터링
+
+### 요구 사항 
+
+* severity가 "CRITICAL"인 로그만 출력
+
+### 💻 모범 답안
+
 ```bash
-grep -E "2026-01-12T0[1-3]:" deploy.csv | awk -F',' '$9=="Python" {print "["$3"] "$8" - $"$20; s+=$20} END{printf "Total Cost: $%.2f\n", s}'
+jq '.[] | select(.severity == "CRITICAL")' pipeline_logs.json
 ```
- 
-### Q2. AWS 환경에서 CI/CD 툴별 평균 빌드 시간 (빠른 순)
- 
-```bash
-grep ',AWS,' emp.csv | awk -F',' '{sum[$4]+=$12; cnt[$4]++} END{for(i in sum) print i, sum[i]/cnt[i]}' | sort -k2,2n
-```
- 
-- `sort -k2,2n` : 2번째 필드(평균 빌드 시간) 기준 숫자 오름차순 → 첫 줄 = 가장 빠른 툴
- 
+
 ---
- 
-## 5. YAML 설정 분석 — `yq`
- 
-### 개념
- 
+
+## 📌 [Mission] 핵심 필드 추출
+
+### 요구 사항 
+
+* CRITICAL 로그만 대상
+* pipeline_id, error_code만 출력
+
+### 💻 모범 답안
+
 ```bash
-yq '.path.to.field' file.yaml           # 값 읽기
-yq -i '.path.to.field = 값' file.yaml   # 파일 직접 수정 (in-place)
+jq '.[] | select(.severity == "CRITICAL") | {pipeline_id: .pipeline_id, error_code: .error_code}' pipeline_logs.json
 ```
- 
+
 ---
- 
-### Q1. 컨테이너 이미지 값 조회
- 
-```yaml
-# app.yaml
-spec:
-  template:
-    spec:
-      containers:
-        - name: app
-          image: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/web:1.0
-          ports:
-            - containerPort: 8080
+
+## 📊 [Mission] 언어별 장애 통계
+
+### 요구 사항 
+
+* language 필드 추출
+* 언어별 발생 횟수 집계
+
+### 💻 모범 답안
+
+```bash
+jq -r '.[].language' pipeline_logs.json | sort | uniq -c
 ```
- 
+
+---
+
+# 3. 🟢 YAML 설정 분석 (yq)
+
+## 📌 [Mission] Kubernetes 이미지 확인
+
+### 상황 
+
+배포 전 YAML 설정 파일에서 실제 사용되는 컨테이너 이미지를 확인하려고 한다.
+
+### 요구 사항 
+
+* 첫 번째 컨테이너의 image 값 출력
+
+### 💻 모범 답안
+
 ```bash
 yq '.spec.template.spec.containers[0].image' app.yaml
-# 출력: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/web:1.0
 ```
- 
-| 선택지 | 출력 | 설명 |
-|--------|------|------|
-| `.metadata.name` | `web` | Deployment 이름 |
-| `.spec.replicas` | `2` | 레플리카 수 |
-| ✅ `.spec.template.spec.containers[0].image` | 이미지 경로 | **정답** |
-| `.spec.template.spec.containers[0].ports[0].containerPort` | `8080` | 포트 번호 |
- 
+
 ---
- 
-### Q2. HPA CPU 임계값 30% → 50% 변경
- 
+
+## 📌 [Mission] HPA CPU 기준 수정
+
+### 상황 
+
+HPA 설정에서 CPU 기준 사용률을 30%에서 50%로 변경해야 한다.
+
+### 요구 사항 
+
+* hpa가 포함된 yaml 파일 찾기
+* CPU averageUtilization 값을 50으로 변경
+
+### 💻 모범 답안
+
 ```bash
 find . -name "*hpa*.yaml" -exec yq -i '(.spec.metrics[] | select(.resource.name == "cpu") | .resource.target.averageUtilization) = 50' {} \;
 ```
- 
-- `find ... -exec ... {} \;` : 찾은 모든 HPA yaml 파일에 일괄 적용
-- `select(.resource.name == "cpu")` : metrics 배열 중 cpu 항목만 선택
-- `= 50` : averageUtilization 값을 50으로 덮어씀
- 
+
 ---
- 
-## 6. 핵심 개념 & 치트시트
+
+## 📌 [Mission] 서버 필터링
+
+### 상황 
+
+VM 배포 전에 리소스가 충분한 서버를 선별하려고 한다.
+
+### 요구 사항 (Requirements)
+
+* ram_gb > 10
+* status == "running"
+* 조건을 만족하는 서버 객체 전체 출력
+
+### 💻 모범 답안
+
+```bash
+yq '.servers[] | select(.ram_gb > 10 and .status == "running")' my_servers.yaml
+```
+
+
+---
+## 5. 핵심 개념 & 치트시트
  
 ### 파일 권한
  
